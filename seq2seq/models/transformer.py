@@ -243,8 +243,8 @@ class TransformerDecoder(Seq2SeqDecoder):
 
 
 class MultiHeadedAttentionRoPE(nn.Module):
-    """Multi-head attention with RoPE position encoding"""
-    def __init__(self, n_heads: int, dim_embed: int, dropout: float, rope: RotaryPositionEncoding):
+    """Multi-head attention with optional RoPE position encoding"""
+    def __init__(self, n_heads: int, dim_embed: int, dropout: float, rope: RotaryPositionEncoding = None, use_rope: bool = True):
         super().__init__()
         assert dim_embed % n_heads == 0
         
@@ -252,6 +252,7 @@ class MultiHeadedAttentionRoPE(nn.Module):
         self.dim_embed = dim_embed
         self.h = n_heads
         self.rope = rope
+        self.use_rope = use_rope
         
         self.WQ = nn.Linear(dim_embed, dim_embed)
         self.WK = nn.Linear(dim_embed, dim_embed)
@@ -266,30 +267,32 @@ class MultiHeadedAttentionRoPE(nn.Module):
         
         # 1) Linear projections
         query = self.WQ(x_query).view(nbatch, -1, self.h, self.d_k).transpose(1, 2)
-        key = self.WK(x_key).view(nbatch, -1, self.h, self.d_k).transpose(1, 2)
+        key   = self.WK(x_key).view(nbatch, -1, self.h, self.d_k).transpose(1, 2)
         value = self.WV(x_value).view(nbatch, -1, self.h, self.d_k).transpose(1, 2)
         
-        # 2) Apply RoPE to query and key
-        cos_q, sin_q = self.rope(x_query, seq_len_q)
-        cos_k, sin_k = self.rope(x_key, seq_len_k)
-        query, key = apply_rotary_pos_emb(query, key, cos_q, sin_q)
+        # 2) Apply RoPE only if enabled
+        if self.use_rope and self.rope is not None:
+            cos_q, sin_q = self.rope(x_query, seq_len_q)
+            query, key = apply_rotary_pos_emb(query, key, cos_q, sin_q)
         
-        # 3) Attention
+        # 3) Attention scores
         scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.d_k)
         
-        # 4) Mask
+        # 4) Apply mask
         if mask is not None:
             mask = mask.unsqueeze(1) if mask.dim() == 3 else mask
             scores = scores.masked_fill(mask, float('-inf'))
         
+        # 5) Softmax + dropout
         p_atten = torch.nn.functional.softmax(scores, dim=-1)
         p_atten = self.dropout(p_atten)
         
-        # 5) Apply attention to values
+        # 6) Apply attention to values
         x = torch.matmul(p_atten, value)
         x = x.transpose(1, 2).contiguous().view(nbatch, -1, self.dim_embed)
         
         return self.linear(x)
+
 
 
 class ResidualConnection(nn.Module):
@@ -306,28 +309,34 @@ class DecoderBlock(nn.Module):
     '''DecoderBlock with RoPE: self-attention -> cross-attention -> feed-forward'''
     def __init__(self, dim_embed, n_heads, dropout, dim_ff, rope):
         super().__init__()
-        self.atten1 = MultiHeadedAttentionRoPE(n_heads, dim_embed, dropout, rope)
-        self.atten2 = MultiHeadedAttentionRoPE(n_heads, dim_embed, dropout, rope)
+        # Self-attention uses RoPE
+        self.atten1 = MultiHeadedAttentionRoPE(n_heads, dim_embed, dropout, rope=rope, use_rope=True)
+        # Cross-attention does NOT use RoPE
+        self.atten2 = MultiHeadedAttentionRoPE(n_heads, dim_embed, dropout, rope=None, use_rope=False)
+        
         self.feed_forward = nn.Sequential(
             nn.Linear(dim_embed, dim_ff),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(dim_ff, dim_embed)
         )
-        self.residuals = nn.ModuleList([
-            ResidualConnection(dim_embed, dropout) for _ in range(3)
-        ])
+        # Three residual connections
+        self.residuals = nn.ModuleList([ResidualConnection(dim_embed, dropout) for _ in range(3)])
 
     def forward(self, memory, src_mask, decoder_layer_input, trg_mask):
-        x = memory
         y = decoder_layer_input
         
-        # Self-attention with causal mask
+        # 1) Self-attention (causal mask)
         y = self.residuals[0](y, lambda y: self.atten1(y, y, y, mask=trg_mask))
-        # Cross-attention
-        y = self.residuals[1](y, lambda y: self.atten2(y, x, x, mask=src_mask))
-        # Feed-forward
-        return self.residuals[2](y, self.feed_forward)
+        
+        # 2) Cross-attention (encoder output)
+        y = self.residuals[1](y, lambda y: self.atten2(y, memory, memory, mask=src_mask))
+        
+        # 3) Feed-forward
+        y = self.residuals[2](y, self.feed_forward)
+        
+        return y
+
 
 
 @register_model_architecture('transformer', 'transformer')
