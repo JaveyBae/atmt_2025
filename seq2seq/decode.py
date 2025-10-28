@@ -12,8 +12,14 @@ def decode(model: Seq2SeqModel, src_tokens: torch.Tensor, src_pad_mask: torch.Te
     generated = torch.full((batch_size, 1), BOS, dtype=torch.long, device=device)
     finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
     for t in range(max_out_len):
-        # Create target padding mask with correct batch dimension
-        max_len = model.decoder.pos_embed.size(1)
+        # Get max_len from model (compatible with RoPE and traditional position encoding)
+        if hasattr(model.decoder, 'pos_embed'):
+            max_len = model.decoder.pos_embed.size(1)
+        elif hasattr(model.decoder, 'max_seq_len'):
+            max_len = model.decoder.max_seq_len
+        else:
+            max_len = 300  # Default fallback
+        
         if generated.size(1) > max_len:
             generated = generated[:, :max_len]
         # Ensure trg_pad_mask has shape (batch_size, seq_len)
