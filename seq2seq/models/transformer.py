@@ -147,18 +147,25 @@ class TransformerEncoder(Seq2SeqEncoder):
         self.dim_embed = dim_embed
         
         # Token embedding (不再需要位置embedding)
-        self.tok_embed = nn.Embedding(self.src_vocab_size, dim_embed)
+        if pretrained_embedding is not None:
+            # FIX: 解决预训练嵌入未加载的问题。使用 from_pretrained 初始化 embedding。
+            self.tok_embed = nn.Embedding.from_pretrained(pretrained_embedding, freeze=False)
+            # 必须使用嵌入实际的维度和词汇量
+            self.src_vocab_size = self.tok_embed.num_embeddings
+            self.dim_embed = self.tok_embed.embedding_dim 
+        else:
+            self.tok_embed = nn.Embedding(self.src_vocab_size, self.dim_embed)
         
         # RoPE 位置编码
-        head_dim = dim_embed // n_attention_heads
+        head_dim = self.dim_embed // n_attention_heads # 使用正确的 self.dim_embed
         self.rope = RotaryPositionEncoding(head_dim, max_seq_len, rope_base)
         
         self.encoder_blocks = nn.ModuleList([
-            EncoderBlock(dim_embed, dropout, n_attention_heads, dim_ff, self.rope) 
+            EncoderBlock(self.dim_embed, dropout, n_attention_heads, dim_ff, self.rope) 
             for _ in range(n_encoder_layers)
         ])
         self.dropout = nn.Dropout(dropout)
-        self.norm = nn.RMSNorm(dim_embed)
+        self.norm = nn.RMSNorm(self.dim_embed)
 
     def forward(self, input, mask=None):
         x = self.tok_embed(input)
@@ -207,19 +214,26 @@ class TransformerDecoder(Seq2SeqDecoder):
         self.dim_embed = dim_embed
         
         # Token embedding (不再需要位置embedding)
-        self.tok_embed = nn.Embedding(self.tgt_vocab_size, dim_embed)
+        if pretrained_embedding is not None:
+            # FIX: 解决预训练嵌入未加载的问题。使用 from_pretrained 初始化 embedding。
+            self.tok_embed = nn.Embedding.from_pretrained(pretrained_embedding, freeze=False)
+            # 必须使用嵌入实际的维度和词汇量
+            self.tgt_vocab_size = self.tok_embed.num_embeddings
+            self.dim_embed = self.tok_embed.embedding_dim 
+        else:
+            self.tok_embed = nn.Embedding(self.tgt_vocab_size, self.dim_embed)
         
         # RoPE 位置编码
-        head_dim = dim_embed // n_attention_heads
+        head_dim = self.dim_embed // n_attention_heads
         self.rope = RotaryPositionEncoding(head_dim, max_seq_len, rope_base)
         
         self.dropout = nn.Dropout(dropout)
         self.decoder_blocks = nn.ModuleList([
-            DecoderBlock(dim_embed, n_attention_heads, dropout, dim_ff, self.rope) 
+            DecoderBlock(self.dim_embed, n_attention_heads, dropout, dim_ff, self.rope) 
             for _ in range(n_decoder_layers)
         ])
-        self.norm = nn.RMSNorm(dim_embed)
-        self.linear = nn.Linear(dim_embed, self.tgt_vocab_size)
+        self.norm = nn.RMSNorm(self.dim_embed)
+        self.linear = nn.Linear(self.dim_embed, self.tgt_vocab_size)
         self.device = torch.device("cuda" if use_cuda else "cpu")
     
     def future_mask(self, seq_len: int):
@@ -272,6 +286,7 @@ class MultiHeadedAttentionRoPE(nn.Module):
         
         # 2) Apply RoPE only if enabled
         if self.use_rope and self.rope is not None:
+            # 使用 x_query 作为输入来获取 cos/sin 缓存
             cos_q, sin_q = self.rope(x_query, seq_len_q)
             query, key = apply_rotary_pos_emb(query, key, cos_q, sin_q)
         
@@ -294,7 +309,6 @@ class MultiHeadedAttentionRoPE(nn.Module):
         return self.linear(x)
 
 
-
 class ResidualConnection(nn.Module):
     def __init__(self, dim, dropout):
         super().__init__()
@@ -302,6 +316,7 @@ class ResidualConnection(nn.Module):
         self.norm = nn.RMSNorm(dim)
 
     def forward(self, x, sublayer):
+        # 注意: RMSNorm 在残差连接前应用 (Pre-normalization, 类似于 T5/GPT-style)
         return x + self.drop(sublayer(self.norm(x)))
 
 
@@ -338,7 +353,6 @@ class DecoderBlock(nn.Module):
         return y
 
 
-
 @register_model_architecture('transformer', 'transformer')
 def base_architecture(args):
     args.encoder_embed_path = getattr(args, 'encoder_embed_path', None)
@@ -348,8 +362,8 @@ def base_architecture(args):
 
     args.dim_embedding = getattr(args, 'dim_embedding', 512)
     args.attention_heads = getattr(args, 'attention_heads', 8)
-    args.dim_feedforward_encoder = getattr(args, 'dim_feedforward_encoder', 2048)
-    args.dim_feedforward_decoder = getattr(args, 'dim_feedforward_decoder', 2048)
+    args.dim_feedforward_encoder = getattr(args, 'dim_feedforward-encoder', 2048)
+    args.dim_feedforward_decoder = getattr(args, 'dim_feedforward-decoder', 2048)
     args.max_seq_len = getattr(args, 'max_seq_len', 512)
     args.n_encoder_layers = getattr(args, 'n_encoder_layers', 6)
     args.n_decoder_layers = getattr(args, 'n_decoder_layers', 6)
