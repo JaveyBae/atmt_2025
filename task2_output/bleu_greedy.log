@@ -1,0 +1,3 @@
+PAD ID: 3, BOS ID: 1, EOS ID: 2
+PAD token: "<pad>", BOS token: "<s>", EOS token: "</s>"
+BLEU score: 17.91
