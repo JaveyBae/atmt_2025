@@ -1,0 +1,21 @@
+Running benchmark on 100 sentences...
+
+--- Greedy Decoding ---
+Original (Slow) Greedy: 25.73s
+Optimized (Fast) Greedy: 13.47s
+Speedup: 1.91x
+
+--- Beam Search (k=1) ---
+Original (Slow) Beam Search: 20.47s
+Optimized (Fast) Beam Search: 13.06s
+Speedup: 1.57x
+
+--- Beam Search (k=3) ---
+Original (Slow) Beam Search: 55.79s
+Optimized (Fast) Beam Search: 36.67s
+Speedup: 1.52x
+
+--- Beam Search (k=5) ---
+Original (Slow) Beam Search: 88.41s
+Optimized (Fast) Beam Search: 59.18s
+Speedup: 1.49x
